@@ -1,0 +1,254 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Contagem de estoque</title>
+<style>
+  :root{
+    --bg:#f4f5f2; --card:#ffffff; --ink:#1c2321; --mute:#66706c; --line:#d9ddd8;
+    --ok:#14532d; --okink:#ffffff; --warn:#b45309; --err:#b91c1c; --accent:#0f766e;
+  }
+  @media (prefers-color-scheme:dark){
+    :root{ --bg:#141816; --card:#1d2321; --ink:#e8ece9; --mute:#98a39e; --line:#333b38;
+           --ok:#22a05a; --okink:#06130b; --warn:#f59e0b; --err:#f87171; --accent:#2dd4bf; }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.4 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  body{padding:env(safe-area-inset-top) 0 env(safe-area-inset-bottom)}
+  main{max-width:560px;margin:0 auto;padding:12px}
+  header{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:12px}
+  h1{font-size:1.15rem;margin:0}
+  .status{font-size:.85rem;color:var(--mute)}
+  .status b{color:var(--ink)}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:12px;margin-bottom:12px}
+  #reader{width:100%;min-height:0;border-radius:8px;overflow:hidden;background:#000}
+  #reader:empty{display:none}
+  label{display:block;font-size:.85rem;color:var(--mute);margin:10px 0 4px}
+  input{width:100%;font:inherit;padding:12px;border:1px solid var(--line);border-radius:8px;
+    background:var(--bg);color:var(--ink)}
+  input:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+  #qtd{font-size:1.6rem;font-weight:700;text-align:center}
+  .row{display:flex;gap:8px}
+  .row>*{flex:1}
+  button{font:inherit;font-weight:600;padding:13px;border-radius:8px;border:1px solid var(--line);
+    background:var(--card);color:var(--ink);cursor:pointer}
+  button.primary{background:var(--ok);color:var(--okink);border-color:transparent;font-size:1.05rem}
+  button:disabled{opacity:.5}
+  .msg{min-height:1.4em;font-size:.9rem;margin-top:8px}
+  .msg.err{color:var(--err)} .msg.warn{color:var(--warn)} .msg.ok{color:var(--ok)}
+  ul{list-style:none;margin:0;padding:0}
+  li{display:grid;grid-template-columns:1fr auto;gap:2px 8px;padding:8px 0;border-top:1px solid var(--line)}
+  li:first-child{border-top:0}
+  li .c{font-weight:600;word-break:break-all}
+  li .q{font-weight:700;text-align:right}
+  li .d{color:var(--mute);font-size:.85rem;grid-column:1/-1}
+  li.pend .q::after{content:" ⏳";font-weight:400}
+  dialog{border:1px solid var(--line);border-radius:12px;background:var(--card);color:var(--ink);width:min(92vw,460px)}
+  dialog::backdrop{background:rgba(0,0,0,.5)}
+  h2{font-size:1rem;margin:0 0 4px}
+  .small{font-size:.8rem;color:var(--mute)}
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>Contagem de estoque</h1>
+      <div class="status" id="status">—</div>
+    </div>
+    <button id="btnCfg" aria-label="Configurações">⚙ Config</button>
+  </header>
+
+  <section class="card">
+    <div id="reader"></div>
+    <div class="row" style="margin-top:8px">
+      <button id="btnScan">Ler código</button>
+      <button id="btnSync">Sincronizar</button>
+    </div>
+
+    <label for="codigo">Código de barras</label>
+    <input id="codigo" inputmode="text" autocomplete="off" placeholder="Leia ou digite e toque Enter">
+
+    <label for="qtd">Quantidade</label>
+    <input id="qtd" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
+
+    <label for="desc">Descrição</label>
+    <input id="desc" autocomplete="off" placeholder="Breve descrição do item">
+
+    <div class="msg" id="msg"></div>
+    <button class="primary" id="btnSalvar" style="width:100%;margin-top:8px">Salvar contagem</button>
+  </section>
+
+  <section class="card">
+    <h2>Últimas leituras deste aparelho</h2>
+    <ul id="lista"></ul>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <form method="dialog" id="frmCfg">
+    <h2>Configurações</h2>
+    <label for="cfgUrl">Link do Apps Script (termina em /exec)</label>
+    <input id="cfgUrl" placeholder="https://script.google.com/macros/s/.../exec">
+    <label for="cfgToken">Senha</label>
+    <input id="cfgToken" placeholder="a mesma do Code.gs">
+    <label for="cfgDupla">Nome da dupla</label>
+    <input id="cfgDupla" placeholder="Ex.: Dupla 3 - Ana e João">
+    <p class="small">Fica salvo só neste aparelho.</p>
+    <div class="row" style="margin-top:8px">
+      <button value="cancel">Cancelar</button>
+      <button class="primary" id="cfgSalvar" value="ok">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const load = (k, d) => { try { return JSON.parse(localStorage.getItem(k)) ?? d; } catch { return d; } };
+const save = (k, v) => localStorage.setItem(k, JSON.stringify(v));
+
+let cfg   = load('cfg', { url:'', token:'', dupla:'' });
+let fila  = load('fila', []);        // leituras ainda não enviadas
+let hist  = load('hist', []);        // últimas leituras (para mostrar na tela)
+let descs = load('descs', {});       // código -> descrição
+let scanner = null, scanning = false, enviando = false;
+
+function msg(t, tipo=''){ const m=$('msg'); m.textContent=t; m.className='msg '+tipo; }
+function atualizaStatus(){
+  const n = fila.length;
+  $('status').innerHTML = (cfg.dupla ? '<b>'+esc(cfg.dupla)+'</b> · ' : 'Configure a dupla · ')
+    + (n ? n+' pendente(s) de envio' : 'tudo sincronizado')
+    + (navigator.onLine ? '' : ' · sem internet');
+}
+function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function desenhaLista(){
+  const pend = new Set(fila.map(i=>i.id));
+  $('lista').innerHTML = hist.slice(0,12).map(i =>
+    `<li class="${pend.has(i.id)?'pend':''}"><span class="c">${esc(i.code)}</span><span class="q">${esc(i.qty)}</span>`
+    + (i.desc ? `<span class="d">${esc(i.desc)}</span>` : '') + `</li>`).join('')
+    || '<li><span class="d">Nenhuma leitura ainda.</span></li>';
+}
+
+// ---------- Câmera ----------
+async function iniciaScan(){
+  if (scanning) return;
+  $('reader').style.display = 'block';
+  scanner = scanner || new Html5Qrcode('reader', {
+    formatsToSupport: [
+      Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+      Html5QrcodeSupportedFormats.UPC_A,  Html5QrcodeSupportedFormats.UPC_E,
+      Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
+      Html5QrcodeSupportedFormats.ITF, Html5QrcodeSupportedFormats.QR_CODE ],
+    experimentalFeatures: { useBarCodeDetectorIfSupported: true },
+    verbose: false
+  });
+  try{
+    await scanner.start({ facingMode:'environment' },
+      { fps:10, qrbox:(w,h)=>({ width:Math.min(w-20,320), height:Math.min(h,140) }) },
+      txt => { aoLer(txt); }, () => {});
+    scanning = true; $('btnScan').textContent = 'Parar câmera';
+  }catch(e){
+    $('reader').style.display='none';
+    msg('Não foi possível abrir a câmera. Permita o acesso ou digite o código.', 'err');
+  }
+}
+async function paraScan(){
+  if (!scanning) return;
+  try{ await scanner.stop(); }catch{}
+  scanning = false; $('reader').style.display='none'; $('btnScan').textContent='Ler código';
+}
+function aoLer(txt){
+  if (navigator.vibrate) navigator.vibrate(60);
+  paraScan();
+  $('codigo').value = txt.trim();
+  preencheDesc();
+  $('qtd').focus(); $('qtd').select();
+}
+function preencheDesc(){
+  const c = $('codigo').value.trim();
+  if (!c) return;
+  if (descs[c]) { $('desc').value = descs[c]; msg('Item conhecido. Confira e digite a quantidade.', 'ok'); }
+  else { $('desc').value=''; msg('Código novo: informe uma descrição.', 'warn'); }
+}
+
+// ---------- Salvar e enviar ----------
+function novoId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
+
+function salvar(){
+  const code = $('codigo').value.trim(), qtd = $('qtd').value.trim(), desc = $('desc').value.trim();
+  if (!cfg.url || !cfg.token || !cfg.dupla){ msg('Abra Config e preencha link, senha e nome da dupla.', 'err'); return; }
+  if (!code){ msg('Leia ou digite o código.', 'err'); return; }
+  if (qtd === '' || isNaN(Number(qtd)) || Number(qtd) < 0){ msg('Informe a quantidade.', 'err'); $('qtd').focus(); return; }
+
+  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc };
+  fila.push(item); hist.unshift(item); hist = hist.slice(0,50);
+  if (desc) descs[code] = desc;
+  save('fila', fila); save('hist', hist); save('descs', descs);
+
+  $('codigo').value=''; $('qtd').value=''; $('desc').value='';
+  msg('Salvo: '+code+' × '+item.qty, 'ok');
+  desenhaLista(); atualizaStatus();
+  enviar();
+  iniciaScan();                        // já abre para o próximo item
+}
+
+async function enviar(){
+  if (enviando || !fila.length || !cfg.url) return;
+  enviando = true;
+  const lote = fila.slice(0, 50);
+  try{
+    const r = await fetch(cfg.url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
+      body: JSON.stringify({ token:cfg.token, items:lote }) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.erro || 'Falha');
+    const enviados = new Set(lote.map(i=>i.id));
+    fila = fila.filter(i=>!enviados.has(i.id)); save('fila', fila);
+  }catch(e){
+    if (String(e.message).includes('Senha')) msg('Senha incorreta. Verifique em Config.', 'err');
+  }finally{
+    enviando = false; desenhaLista(); atualizaStatus();
+    if (fila.length && navigator.onLine) setTimeout(enviar, 1500);
+  }
+}
+
+async function baixaDescricoes(){
+  if (!cfg.url || !cfg.token) return;
+  try{
+    const r = await fetch(cfg.url + '?token=' + encodeURIComponent(cfg.token));
+    const j = await r.json();
+    if (j.ok){ descs = Object.assign(j.desc, descs); save('descs', descs); }
+  }catch{}
+}
+
+async function sincronizar(){
+  msg('Sincronizando…');
+  await enviar(); await baixaDescricoes();
+  msg(fila.length ? 'Ainda há itens pendentes (sem conexão?).' : 'Sincronizado.', fila.length ? 'warn' : 'ok');
+}
+
+// ---------- Eventos ----------
+$('btnScan').onclick = () => scanning ? paraScan() : iniciaScan();
+$('btnSalvar').onclick = salvar;
+$('btnSync').onclick = sincronizar;
+$('codigo').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); preencheDesc(); $('qtd').focus(); } });
+$('codigo').addEventListener('change', preencheDesc);
+$('qtd').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('desc').focus(); } });
+$('desc').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); salvar(); } });
+$('btnCfg').onclick = () => { $('cfgUrl').value=cfg.url; $('cfgToken').value=cfg.token; $('cfgDupla').value=cfg.dupla; $('dlg').showModal(); };
+$('frmCfg').addEventListener('submit', e => {
+  if (e.submitter && e.submitter.value === 'ok'){
+    cfg = { url:$('cfgUrl').value.trim(), token:$('cfgToken').value.trim(), dupla:$('cfgDupla').value.trim() };
+    save('cfg', cfg); atualizaStatus(); baixaDescricoes();
+  }
+});
+window.addEventListener('online',  () => { atualizaStatus(); enviar(); });
+window.addEventListener('offline', atualizaStatus);
+
+desenhaLista(); atualizaStatus();
+if (!cfg.url) $('btnCfg').click(); else { baixaDescricoes(); enviar(); }
+</script>
+</body>
+</html>
