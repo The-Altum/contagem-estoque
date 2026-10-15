@@ -425,7 +425,7 @@ async function enviar(){
     const enviados = new Set(lote.map(k));
     fila = fila.filter(i=>!enviados.has(k(i))); save('fila', fila);
     lote.forEach(i => { if (i.foto && (i.op || 'add') === 'add') fotoDel(i.id); });
-    if (j.fotosComErro) msg(j.fotosComErro+' foto(s) não foram salvas no Drive. Avise quem configurou o Apps Script.', 'err');
+    if (j.fotosComErro) msg(j.fotosComErro+' foto(s) não foram salvas no Drive. Avise quem configurou o Apps Script.'+(j.erroFoto ? ' Motivo: '+j.erroFoto : ''), 'err');
   }catch(e){
     if (String(e.message).includes('Senha')) msg('Senha incorreta. Verifique em Config.', 'err');
   }finally{
