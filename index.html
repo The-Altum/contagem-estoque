@@ -37,6 +37,9 @@
   button.primary{background:var(--ok);color:var(--okink);border-color:transparent;font-size:1.05rem}
   button:disabled{opacity:.5}
   button.danger{color:var(--err)}
+  [hidden]{display:none !important}
+  .prev{display:block;width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin-top:8px;background:var(--bg)}
+  li .d b{color:var(--ink)}
   li[data-id]{cursor:pointer}
   li[data-id]:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
   .msg{min-height:1.4em;font-size:.9rem;margin-top:8px}
@@ -80,6 +83,18 @@
     <label for="desc">Descrição</label>
     <input id="desc" autocomplete="off" placeholder="Breve descrição do item">
 
+    <label for="cor">Cor (opcional)</label>
+    <input id="cor" list="listaCores" autocomplete="off" placeholder="Ex.: azul">
+
+    <label>Foto (opcional)</label>
+    <div class="row">
+      <button type="button" id="btnFoto">Tirar foto</button>
+      <button type="button" id="btnFotoRem" hidden>Remover foto</button>
+    </div>
+    <input id="fileFoto" type="file" accept="image/*" capture="environment" hidden>
+    <img id="prevFoto" class="prev" alt="Prévia da foto" hidden>
+
+    <datalist id="listaCores"></datalist>
     <div class="msg" id="msg"></div>
     <button class="primary" id="btnSalvar" style="width:100%;margin-top:8px">Salvar contagem</button>
   </section>
@@ -117,6 +132,8 @@
     <input id="edQtd" type="number" inputmode="decimal" min="0" step="any">
     <label for="edDesc">Descrição</label>
     <input id="edDesc" autocomplete="off">
+    <label for="edCor">Cor</label>
+    <input id="edCor" list="listaCores" autocomplete="off">
     <div class="row" style="margin-top:12px">
       <button value="cancel">Cancelar</button>
       <button class="danger" value="del">Excluir</button>
@@ -135,7 +152,31 @@ let cfg   = load('cfg', { url:'', token:'', dupla:'' });
 let fila  = load('fila', []);        // leituras ainda não enviadas
 let hist  = load('hist', []);        // últimas leituras (para mostrar na tela)
 let descs = load('descs', {});       // código -> descrição
+let cores = load('cores', []);       // cores já usadas (sugestões)
+let fotoAtual = '';                  // foto tirada, ainda não salva
 let scanner = null, scanning = false, enviando = false;
+
+// Fotos ficam no IndexedDB (cabem muito mais que o localStorage)
+const idb = new Promise((res, rej) => {
+  if (!window.indexedDB) return rej(new Error('sem IndexedDB'));
+  const r = indexedDB.open('contagem', 1);
+  r.onupgradeneeded = () => r.result.createObjectStore('fotos');
+  r.onsuccess = () => res(r.result);
+  r.onerror = () => rej(r.error);
+});
+idb.catch(() => {});
+const fotoPut = (k, v) => idb.then(db => new Promise((res, rej) => {
+  const t = db.transaction('fotos', 'readwrite'); t.objectStore('fotos').put(v, k);
+  t.oncomplete = res; t.onerror = () => rej(t.error);
+}));
+const fotoGet = k => idb.then(db => new Promise((res, rej) => {
+  const r = db.transaction('fotos').objectStore('fotos').get(k);
+  r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+}));
+const fotoDel = k => idb.then(db => new Promise((res, rej) => {
+  const t = db.transaction('fotos', 'readwrite'); t.objectStore('fotos').delete(k);
+  t.oncomplete = res; t.onerror = () => rej(t.error);
+})).catch(() => {});
 
 function msg(t, tipo=''){ const m=$('msg'); m.textContent=t; m.className='msg '+tipo; }
 function atualizaStatus(){
@@ -149,7 +190,9 @@ function desenhaLista(){
   const pend = new Set(fila.map(i=>i.id));
   $('lista').innerHTML = hist.slice(0,30).map(i =>
     `<li tabindex="0" data-id="${esc(i.id)}" class="${pend.has(i.id)?'pend':''}"><span class="c">${esc(i.code)}</span><span class="q">${esc(i.qty)}</span>`
-    + (i.desc ? `<span class="d">${esc(i.desc)}</span>` : '') + `</li>`).join('')
+    + ((i.desc || i.cor || i.foto)
+        ? `<span class="d">${i.cor ? '<b>'+esc(i.cor)+'</b> ' : ''}${esc(i.desc || '')}${i.foto ? ' 📷' : ''}</span>` : '')
+    + `</li>`).join('')
     || '<li><span class="d">Nenhuma leitura ainda.</span></li>';
 }
 
@@ -204,20 +247,57 @@ function preencheDesc(){
 // ---------- Salvar e enviar ----------
 function novoId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
-function salvar(){
-  const code = $('codigo').value.trim(), qtd = $('qtd').value.trim(), desc = $('desc').value.trim();
+function montaCores(){
+  const todas = new Set(cores);
+  hist.forEach(i => { if (i.cor) todas.add(i.cor); });
+  $('listaCores').innerHTML = Array.from(todas).sort().map(c => `<option value="${esc(c)}">`).join('');
+}
+
+function reduzFoto(file){
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => {
+      const fator = Math.min(1, 1024 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * fator); c.height = Math.round(img.height * fator);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      URL.revokeObjectURL(url);
+      res(c.toDataURL('image/jpeg', 0.7));
+    };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('imagem inválida')); };
+    img.src = url;
+  });
+}
+function limpaFoto(){
+  fotoAtual = ''; $('fileFoto').value = '';
+  $('prevFoto').hidden = true; $('prevFoto').removeAttribute('src');
+  $('btnFotoRem').hidden = true; $('btnFoto').textContent = 'Tirar foto';
+}
+
+let salvando = false;
+async function salvar(){
+  if (salvando) return;
+  const code = $('codigo').value.trim(), qtd = $('qtd').value.trim(),
+        desc = $('desc').value.trim(), cor = $('cor').value.trim();
   if (!cfg.url || !cfg.token || !cfg.dupla){ msg('Abra Config e preencha link, senha e nome da dupla.', 'err'); return; }
   if (!code){ msg('Leia ou digite o código.', 'err'); return; }
   if (qtd === '' || isNaN(Number(qtd)) || Number(qtd) < 0){ msg('Informe a quantidade.', 'err'); $('qtd').focus(); return; }
 
-  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc };
+  salvando = true; $('btnSalvar').disabled = true;
+  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc, cor };
+  let aviso = '';
+  if (fotoAtual){
+    try{ await fotoPut(item.id, fotoAtual); item.foto = true; }
+    catch{ aviso = ' (a foto não pôde ser guardada neste aparelho)'; }
+  }
   fila.push({ ...item, op:'add', qid:novoId() }); hist.unshift(item); hist = hist.slice(0,200);
   if (desc) descs[code] = desc;
   save('fila', fila); save('hist', hist); save('descs', descs);
 
-  $('codigo').value=''; $('qtd').value=''; $('desc').value='';
-  msg('Salvo: '+code+' × '+item.qty, 'ok');
-  desenhaLista(); atualizaStatus();
+  $('codigo').value=''; $('qtd').value=''; $('desc').value=''; $('cor').value=''; limpaFoto();
+  msg('Salvo: '+code+' × '+item.qty+aviso, aviso ? 'warn' : 'ok');
+  montaCores(); desenhaLista(); atualizaStatus();
+  salvando = false; $('btnSalvar').disabled = false;
   enviar();
   iniciaScan();                        // já abre para o próximo item
 }
@@ -225,8 +305,17 @@ function salvar(){
 async function enviar(){
   if (enviando || !fila.length || !cfg.url) return;
   enviando = true;
-  const lote = fila.slice(0, 50);
   try{
+    const lote = []; let bytes = 0;
+    for (const it of fila){
+      const q = { ...it };
+      if (q.foto && (q.op || 'add') === 'add'){
+        try{ q.fotoB64 = (await fotoGet(q.id)) || ''; }catch{ q.fotoB64 = ''; }
+      }
+      const tam = (q.fotoB64 || '').length + 400;
+      if (lote.length && (lote.length >= 40 || bytes + tam > 1500000)) break;
+      lote.push(q); bytes += tam;
+    }
     const r = await fetch(cfg.url, { method:'POST', headers:{'Content-Type':'text/plain;charset=utf-8'},
       body: JSON.stringify({ token:cfg.token, items:lote }) });
     const j = await r.json();
@@ -234,6 +323,8 @@ async function enviar(){
     const k = i => i.qid || i.id;
     const enviados = new Set(lote.map(k));
     fila = fila.filter(i=>!enviados.has(k(i))); save('fila', fila);
+    lote.forEach(i => { if (i.foto && (i.op || 'add') === 'add') fotoDel(i.id); });
+    if (j.fotosComErro) msg(j.fotosComErro+' foto(s) não foram salvas no Drive. Avise quem configurou o Apps Script.', 'err');
   }catch(e){
     if (String(e.message).includes('Senha')) msg('Senha incorreta. Verifique em Config.', 'err');
   }finally{
@@ -247,7 +338,10 @@ async function baixaDescricoes(){
   try{
     const r = await fetch(cfg.url + '?token=' + encodeURIComponent(cfg.token));
     const j = await r.json();
-    if (j.ok){ descs = Object.assign(j.desc, descs); save('descs', descs); }
+    if (j.ok){
+      descs = Object.assign(j.desc, descs); save('descs', descs);
+      cores = j.cores || []; save('cores', cores); montaCores();
+    }
   }catch{}
 }
 
@@ -267,10 +361,11 @@ function abreEdicao(id){
   $('edCodigo').value = h.code;
   $('edQtd').value = h.qty;
   $('edDesc').value = h.desc || '';
+  $('edCor').value = h.cor || '';
   $('dlgEdit').showModal();
 }
 
-// campos = { code, qty, desc } para corrigir; null para excluir
+// campos = { code, qty, desc, cor } para corrigir; null para excluir
 function aplicaEdicao(id, campos){
   const idx = hist.findIndex(i => i.id === id);
   const pendente = fila.find(i => i.id === id && (i.op || 'add') === 'add');
@@ -283,11 +378,11 @@ function aplicaEdicao(id, campos){
     if (campos.desc) descs[campos.code] = campos.desc;
   } else {
     if (idx >= 0) hist.splice(idx, 1);
-    if (direto) fila = fila.filter(i => i.id !== id);
+    if (direto){ fila = fila.filter(i => i.id !== id); fotoDel(id); }
     else fila.push({ op:'del', id, qid:novoId() });
   }
   save('fila', fila); save('hist', hist); save('descs', descs);
-  desenhaLista(); atualizaStatus();
+  montaCores(); desenhaLista(); atualizaStatus();
   msg(campos ? 'Leitura corrigida.' : 'Leitura excluída.', 'ok');
   enviar();
 }
@@ -308,7 +403,7 @@ $('frmEdit').addEventListener('submit', e => {
     if (!code || qty === '' || isNaN(Number(qty)) || Number(qty) < 0){
       e.preventDefault(); alert('Informe um código e uma quantidade válidos.'); return;
     }
-    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim() });
+    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim(), cor:$('edCor').value.trim() });
   } else if (acao === 'del'){
     if (!confirm('Excluir esta leitura?')){ e.preventDefault(); return; }
     aplicaEdicao(editId, null);
@@ -316,13 +411,26 @@ $('frmEdit').addEventListener('submit', e => {
 });
 
 // ---------- Eventos ----------
+$('btnFoto').onclick = async () => { await paraScan(); $('fileFoto').click(); };
+$('fileFoto').addEventListener('change', async () => {
+  const f = $('fileFoto').files[0];
+  if (!f) return;
+  try{
+    fotoAtual = await reduzFoto(f);
+    $('prevFoto').src = fotoAtual; $('prevFoto').hidden = false;
+    $('btnFotoRem').hidden = false; $('btnFoto').textContent = 'Trocar foto';
+    msg('Foto pronta. Toque em Salvar contagem.', 'ok');
+  }catch{ limpaFoto(); msg('Não consegui ler a foto. Tente de novo.', 'err'); }
+});
+$('btnFotoRem').onclick = limpaFoto;
+$('cor').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); salvar(); } });
 $('btnScan').onclick = () => scanning ? paraScan() : iniciaScan();
 $('btnSalvar').onclick = salvar;
 $('btnSync').onclick = sincronizar;
 $('codigo').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); preencheDesc(); $('qtd').focus(); } });
 $('codigo').addEventListener('change', preencheDesc);
 $('qtd').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('desc').focus(); } });
-$('desc').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); salvar(); } });
+$('desc').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('cor').focus(); } });
 $('btnCfg').onclick = () => { $('cfgUrl').value=cfg.url; $('cfgToken').value=cfg.token; $('cfgDupla').value=cfg.dupla; $('dlg').showModal(); };
 $('frmCfg').addEventListener('submit', e => {
   if (e.submitter && e.submitter.value === 'ok'){
@@ -333,7 +441,7 @@ $('frmCfg').addEventListener('submit', e => {
 window.addEventListener('online',  () => { atualizaStatus(); enviar(); });
 window.addEventListener('offline', atualizaStatus);
 
-desenhaLista(); atualizaStatus();
+montaCores(); desenhaLista(); atualizaStatus();
 if (!cfg.url) $('btnCfg').click(); else { baixaDescricoes(); enviar(); }
 </script>
 </body>
