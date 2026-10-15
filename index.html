@@ -38,6 +38,8 @@
   button:disabled{opacity:.5}
   button.danger{color:var(--err)}
   [hidden]{display:none !important}
+  input[type=range]{padding:0;height:32px}
+  #reader{cursor:pointer}
   .prev{display:block;width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin-top:8px;background:var(--bg)}
   li .d b{color:var(--ink)}
   li[data-id]{cursor:pointer}
@@ -69,6 +71,21 @@
 
   <section class="card">
     <div id="reader"></div>
+    <div id="camCtl" hidden>
+      <p class="small" style="margin:6px 0 0">Se ficar borrado, afaste o celular uns 15 a 25 cm: de perto o foco não alcança. Toque na imagem para focar de novo.</p>
+      <div id="zoomBox" hidden>
+        <label for="zoom">Zoom</label>
+        <input id="zoom" type="range">
+      </div>
+      <div id="focoBox" hidden>
+        <label for="foco">Foco manual (arraste até ficar nítido)</label>
+        <input id="foco" type="range">
+      </div>
+      <div class="row" style="margin-top:8px">
+        <button type="button" id="btnRefocar" hidden>Refocar</button>
+        <button type="button" id="btnLanterna" hidden>Lanterna</button>
+      </div>
+    </div>
     <div class="row" style="margin-top:8px">
       <button id="btnScan">Ler código</button>
       <button id="btnSync">Sincronizar</button>
@@ -196,6 +213,83 @@ function desenhaLista(){
     || '<li><span class="d">Nenhuma leitura ainda.</span></li>';
 }
 
+// ---------- Validação das leituras ----------
+// EAN-13, UPC-A e ITF-14 têm dígito verificador: se não bater, a leitura veio errada.
+function gs1Ok(d){
+  const n = d.length; let s = 0;
+  for (let i = 0; i < n - 1; i++) s += Number(d[n-2-i]) * (i % 2 === 0 ? 3 : 1);
+  return (10 - s % 10) % 10 === Number(d[n-1]);
+}
+let ult = { txt:'', n:0, t:0 };
+function candidato(txt){
+  txt = String(txt).trim();
+  if (!txt) return;
+  const soNum = /^\d+$/.test(txt);
+  let precisa = 3;                                   // sem dígito verificador: exige 3 leituras iguais seguidas
+  if (soNum && [12,13,14].includes(txt.length)){
+    if (!gs1Ok(txt)){ ult = { txt:'', n:0, t:0 }; msg('Leitura inválida (dígito errado). Continue mirando…', 'warn'); return; }
+    precisa = 2;
+  } else if (soNum && txt.length === 8 && gs1Ok(txt)){
+    precisa = 2;
+  }
+  const agora = Date.now();
+  if (txt === ult.txt && agora - ult.t < 1500) ult.n++; else ult = { txt, n:1, t:agora };
+  ult.t = agora;
+  if (ult.n >= precisa){ ult = { txt:'', n:0, t:0 }; aoLer(txt); }
+}
+
+// ---------- Controles da câmera (zoom, foco, lanterna) ----------
+let lanterna = false;
+function trilha(){
+  const v = document.querySelector('#reader video');
+  return v && v.srcObject ? v.srcObject.getVideoTracks()[0] : null;
+}
+function configuraCamera(){
+  $('camCtl').hidden = false;
+  const t = trilha();
+  if (!t || !t.getCapabilities) return;
+  const cap = t.getCapabilities(), modos = cap.focusMode || [];
+  if (modos.includes('continuous')) t.applyConstraints({ advanced:[{ focusMode:'continuous' }] }).catch(()=>{});
+  if (cap.zoom){
+    const z = $('zoom');
+    z.min = cap.zoom.min; z.max = cap.zoom.max; z.step = cap.zoom.step || 0.1;
+    const guardado = Number(load('zoom', 0));
+    z.value = guardado >= cap.zoom.min && guardado <= cap.zoom.max ? guardado : (t.getSettings().zoom || cap.zoom.min);
+    $('zoomBox').hidden = false;
+    t.applyConstraints({ advanced:[{ zoom:Number(z.value) }] }).catch(()=>{});
+  }
+  if (cap.focusDistance){
+    const f = $('foco');
+    f.min = cap.focusDistance.min; f.max = cap.focusDistance.max; f.step = cap.focusDistance.step || 0.01;
+    f.value = cap.focusDistance.min;
+    $('focoBox').hidden = false;
+  }
+  $('btnRefocar').hidden = !modos.length;
+  $('btnLanterna').hidden = !cap.torch;
+}
+async function refocar(){
+  const t = trilha(); if (!t || !t.getCapabilities) return;
+  const modos = t.getCapabilities().focusMode || [];
+  try{
+    if (modos.includes('single-shot')){
+      await t.applyConstraints({ advanced:[{ focusMode:'single-shot' }] });
+      await new Promise(r => setTimeout(r, 900));
+    } else if (modos.includes('manual')){
+      await t.applyConstraints({ advanced:[{ focusMode:'manual' }] });
+      await new Promise(r => setTimeout(r, 250));
+    }
+    if (modos.includes('continuous')) await t.applyConstraints({ advanced:[{ focusMode:'continuous' }] });
+  }catch{}
+}
+async function alternaLanterna(){
+  const t = trilha(); if (!t) return;
+  try{
+    await t.applyConstraints({ advanced:[{ torch: !lanterna }] });
+    lanterna = !lanterna;
+    $('btnLanterna').textContent = lanterna ? 'Lanterna ligada' : 'Lanterna';
+  }catch{}
+}
+
 // ---------- Câmera ----------
 async function iniciaScan(){
   if (scanning) return;
@@ -211,9 +305,13 @@ async function iniciaScan(){
   });
   try{
     await scanner.start({ facingMode:'environment' },
-      { fps:10, qrbox:(w,h)=>({ width:Math.min(w-20,320), height:Math.min(h,140) }) },
-      txt => { aoLer(txt); }, () => {});
+      { fps:10,
+        qrbox:(w,h)=>({ width:Math.min(w-20,360), height:Math.min(h,160) }),
+        videoConstraints:{ facingMode:'environment', width:{ ideal:1920 }, height:{ ideal:1080 } } },
+      txt => candidato(txt), () => {});
     scanning = true; $('btnScan').textContent = 'Parar câmera';
+    ult = { txt:'', n:0, t:0 };
+    configuraCamera();
   }catch(e){
     $('reader').style.display='none';
     msg('Não foi possível abrir a câmera. Permita o acesso ou digite o código.', 'err');
@@ -223,6 +321,9 @@ async function paraScan(){
   if (!scanning) return;
   try{ await scanner.stop(); }catch{}
   scanning = false; $('reader').style.display='none'; $('btnScan').textContent='Ler código';
+  $('camCtl').hidden = true; $('zoomBox').hidden = true; $('focoBox').hidden = true;
+  $('btnRefocar').hidden = true; $('btnLanterna').hidden = true;
+  lanterna = false; $('btnLanterna').textContent = 'Lanterna';
 }
 function aoLer(txt){
   if (navigator.vibrate) navigator.vibrate(60);
@@ -424,6 +525,18 @@ $('fileFoto').addEventListener('change', async () => {
 });
 $('btnFotoRem').onclick = limpaFoto;
 $('cor').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); salvar(); } });
+$('zoom').addEventListener('input', () => {
+  const t = trilha(); const v = Number($('zoom').value);
+  save('zoom', v);
+  if (t) t.applyConstraints({ advanced:[{ zoom:v }] }).catch(()=>{});
+});
+$('foco').addEventListener('input', () => {
+  const t = trilha();
+  if (t) t.applyConstraints({ advanced:[{ focusMode:'manual', focusDistance:Number($('foco').value) }] }).catch(()=>{});
+});
+$('btnRefocar').onclick = refocar;
+$('btnLanterna').onclick = alternaLanterna;
+$('reader').addEventListener('click', refocar);
 $('btnScan').onclick = () => scanning ? paraScan() : iniciaScan();
 $('btnSalvar').onclick = salvar;
 $('btnSync').onclick = sincronizar;
