@@ -36,6 +36,9 @@
     background:var(--card);color:var(--ink);cursor:pointer}
   button.primary{background:var(--ok);color:var(--okink);border-color:transparent;font-size:1.05rem}
   button:disabled{opacity:.5}
+  button.danger{color:var(--err)}
+  li[data-id]{cursor:pointer}
+  li[data-id]:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
   .msg{min-height:1.4em;font-size:.9rem;margin-top:8px}
   .msg.err{color:var(--err)} .msg.warn{color:var(--warn)} .msg.ok{color:var(--ok)}
   ul{list-style:none;margin:0;padding:0}
@@ -83,6 +86,7 @@
 
   <section class="card">
     <h2>Últimas leituras deste aparelho</h2>
+    <p class="small" style="margin:0 0 4px">Toque numa leitura para corrigir ou excluir.</p>
     <ul id="lista"></ul>
   </section>
 </main>
@@ -100,6 +104,23 @@
     <div class="row" style="margin-top:8px">
       <button value="cancel">Cancelar</button>
       <button class="primary" id="cfgSalvar" value="ok">Salvar</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="dlgEdit">
+  <form method="dialog" id="frmEdit">
+    <h2>Corrigir leitura</h2>
+    <label for="edCodigo">Código</label>
+    <input id="edCodigo" autocomplete="off">
+    <label for="edQtd">Quantidade</label>
+    <input id="edQtd" type="number" inputmode="decimal" min="0" step="any">
+    <label for="edDesc">Descrição</label>
+    <input id="edDesc" autocomplete="off">
+    <div class="row" style="margin-top:12px">
+      <button value="cancel">Cancelar</button>
+      <button class="danger" value="del">Excluir</button>
+      <button class="primary" value="ok">Salvar</button>
     </div>
   </form>
 </dialog>
@@ -126,8 +147,8 @@ function atualizaStatus(){
 function esc(s){ return String(s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function desenhaLista(){
   const pend = new Set(fila.map(i=>i.id));
-  $('lista').innerHTML = hist.slice(0,12).map(i =>
-    `<li class="${pend.has(i.id)?'pend':''}"><span class="c">${esc(i.code)}</span><span class="q">${esc(i.qty)}</span>`
+  $('lista').innerHTML = hist.slice(0,30).map(i =>
+    `<li tabindex="0" data-id="${esc(i.id)}" class="${pend.has(i.id)?'pend':''}"><span class="c">${esc(i.code)}</span><span class="q">${esc(i.qty)}</span>`
     + (i.desc ? `<span class="d">${esc(i.desc)}</span>` : '') + `</li>`).join('')
     || '<li><span class="d">Nenhuma leitura ainda.</span></li>';
 }
@@ -170,8 +191,14 @@ function aoLer(txt){
 function preencheDesc(){
   const c = $('codigo').value.trim();
   if (!c) return;
-  if (descs[c]) { $('desc').value = descs[c]; msg('Item conhecido. Confira e digite a quantidade.', 'ok'); }
-  else { $('desc').value=''; msg('Código novo: informe uma descrição.', 'warn'); }
+  $('desc').value = descs[c] || '';
+  const ja = hist.filter(i => i.code === c);
+  if (ja.length){
+    const tot = ja.reduce((s,i)=>s+Number(i.qty||0), 0);
+    msg('Já contado neste aparelho: '+tot+' ('+ja.length+' leitura'+(ja.length>1?'s':'')+'). A nova quantidade será somada.', 'warn');
+  }
+  else if (descs[c]) msg('Item conhecido. Confira e digite a quantidade.', 'ok');
+  else msg('Código novo: informe uma descrição.', 'warn');
 }
 
 // ---------- Salvar e enviar ----------
@@ -184,7 +211,7 @@ function salvar(){
   if (qtd === '' || isNaN(Number(qtd)) || Number(qtd) < 0){ msg('Informe a quantidade.', 'err'); $('qtd').focus(); return; }
 
   const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc };
-  fila.push(item); hist.unshift(item); hist = hist.slice(0,50);
+  fila.push({ ...item, op:'add', qid:novoId() }); hist.unshift(item); hist = hist.slice(0,200);
   if (desc) descs[code] = desc;
   save('fila', fila); save('hist', hist); save('descs', descs);
 
@@ -204,8 +231,9 @@ async function enviar(){
       body: JSON.stringify({ token:cfg.token, items:lote }) });
     const j = await r.json();
     if (!j.ok) throw new Error(j.erro || 'Falha');
-    const enviados = new Set(lote.map(i=>i.id));
-    fila = fila.filter(i=>!enviados.has(i.id)); save('fila', fila);
+    const k = i => i.qid || i.id;
+    const enviados = new Set(lote.map(k));
+    fila = fila.filter(i=>!enviados.has(k(i))); save('fila', fila);
   }catch(e){
     if (String(e.message).includes('Senha')) msg('Senha incorreta. Verifique em Config.', 'err');
   }finally{
@@ -228,6 +256,64 @@ async function sincronizar(){
   await enviar(); await baixaDescricoes();
   msg(fila.length ? 'Ainda há itens pendentes (sem conexão?).' : 'Sincronizado.', fila.length ? 'warn' : 'ok');
 }
+
+// ---------- Corrigir / excluir ----------
+let editId = null;
+
+function abreEdicao(id){
+  const h = hist.find(i => i.id === id);
+  if (!h) return;
+  editId = id;
+  $('edCodigo').value = h.code;
+  $('edQtd').value = h.qty;
+  $('edDesc').value = h.desc || '';
+  $('dlgEdit').showModal();
+}
+
+// campos = { code, qty, desc } para corrigir; null para excluir
+function aplicaEdicao(id, campos){
+  const idx = hist.findIndex(i => i.id === id);
+  const pendente = fila.find(i => i.id === id && (i.op || 'add') === 'add');
+  const direto = pendente && !enviando;      // ainda não saiu do aparelho: altera na própria fila
+
+  if (campos){
+    if (idx >= 0) Object.assign(hist[idx], campos);
+    if (direto) Object.assign(pendente, campos);
+    else fila.push({ op:'edit', id, qid:novoId(), ...campos });
+    if (campos.desc) descs[campos.code] = campos.desc;
+  } else {
+    if (idx >= 0) hist.splice(idx, 1);
+    if (direto) fila = fila.filter(i => i.id !== id);
+    else fila.push({ op:'del', id, qid:novoId() });
+  }
+  save('fila', fila); save('hist', hist); save('descs', descs);
+  desenhaLista(); atualizaStatus();
+  msg(campos ? 'Leitura corrigida.' : 'Leitura excluída.', 'ok');
+  enviar();
+}
+
+$('lista').addEventListener('click', e => {
+  const li = e.target.closest('li[data-id]');
+  if (li) abreEdicao(li.dataset.id);
+});
+$('lista').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const li = e.target.closest('li[data-id]');
+  if (li) abreEdicao(li.dataset.id);
+});
+$('frmEdit').addEventListener('submit', e => {
+  const acao = e.submitter && e.submitter.value;
+  if (acao === 'ok'){
+    const code = $('edCodigo').value.trim(), qty = $('edQtd').value.trim();
+    if (!code || qty === '' || isNaN(Number(qty)) || Number(qty) < 0){
+      e.preventDefault(); alert('Informe um código e uma quantidade válidos.'); return;
+    }
+    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim() });
+  } else if (acao === 'del'){
+    if (!confirm('Excluir esta leitura?')){ e.preventDefault(); return; }
+    aplicaEdicao(editId, null);
+  }
+});
 
 // ---------- Eventos ----------
 $('btnScan').onclick = () => scanning ? paraScan() : iniciaScan();
