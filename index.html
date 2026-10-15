@@ -26,9 +26,9 @@
   #reader{width:100%;min-height:0;border-radius:8px;overflow:hidden;background:#000}
   #reader:empty{display:none}
   label{display:block;font-size:.85rem;color:var(--mute);margin:10px 0 4px}
-  input{width:100%;font:inherit;padding:12px;border:1px solid var(--line);border-radius:8px;
+  input,select{width:100%;font:inherit;padding:12px;border:1px solid var(--line);border-radius:8px;
     background:var(--bg);color:var(--ink)}
-  input:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
+  input:focus-visible,select:focus-visible,button:focus-visible{outline:3px solid var(--accent);outline-offset:1px}
   #qtd{font-size:1.6rem;font-weight:700;text-align:center}
   .row{display:flex;gap:8px}
   .row>*{flex:1}
@@ -91,8 +91,12 @@
       <button id="btnSync">Sincronizar</button>
     </div>
 
+    <label for="setor">Setor</label>
+    <select id="setor"></select>
+
     <label for="codigo">Código de barras</label>
     <input id="codigo" inputmode="text" autocomplete="off" placeholder="Leia ou digite e toque Enter">
+    <button type="button" id="btnManual" style="width:100%;margin-top:6px">Item sem código? Gerar código manual</button>
 
     <label for="qtd">Quantidade</label>
     <input id="qtd" type="number" inputmode="decimal" min="0" step="any" placeholder="0">
@@ -151,6 +155,8 @@
     <input id="edDesc" autocomplete="off">
     <label for="edCor">Cor</label>
     <input id="edCor" list="listaCores" autocomplete="off">
+    <label for="edSetor">Setor</label>
+    <select id="edSetor"></select>
     <div class="row" style="margin-top:12px">
       <button value="cancel">Cancelar</button>
       <button class="danger" value="del">Excluir</button>
@@ -170,6 +176,8 @@ let fila  = load('fila', []);        // leituras ainda não enviadas
 let hist  = load('hist', []);        // últimas leituras (para mostrar na tela)
 let descs = load('descs', {});       // código -> descrição
 let cores = load('cores', []);       // cores já usadas (sugestões)
+const SETORES_PADRAO = Array.from({ length:9 }, (_, i) => 'Setor ' + (i + 1));
+let setores = load('setores', SETORES_PADRAO);   // a lista oficial vem do Code.gs
 let fotoAtual = '';                  // foto tirada, ainda não salva
 let scanner = null, scanning = false, enviando = false;
 
@@ -207,8 +215,8 @@ function desenhaLista(){
   const pend = new Set(fila.map(i=>i.id));
   $('lista').innerHTML = hist.slice(0,30).map(i =>
     `<li tabindex="0" data-id="${esc(i.id)}" class="${pend.has(i.id)?'pend':''}"><span class="c">${esc(i.code)}</span><span class="q">${esc(i.qty)}</span>`
-    + ((i.desc || i.cor || i.foto)
-        ? `<span class="d">${i.cor ? '<b>'+esc(i.cor)+'</b> ' : ''}${esc(i.desc || '')}${i.foto ? ' 📷' : ''}</span>` : '')
+    + ((i.setor || i.desc || i.cor || i.foto)
+        ? `<span class="d">${i.setor ? '<b>'+esc(i.setor)+'</b> ' : ''}${i.cor ? '<b>'+esc(i.cor)+'</b> ' : ''}${esc(i.desc || '')}${i.foto ? ' 📷' : ''}</span>` : '')
     + `</li>`).join('')
     || '<li><span class="d">Nenhuma leitura ainda.</span></li>';
 }
@@ -354,6 +362,36 @@ function montaCores(){
   $('listaCores').innerHTML = Array.from(todas).sort().map(c => `<option value="${esc(c)}">`).join('');
 }
 
+function montaSetores(){
+  const atual = $('setor').value || load('setor', '');
+  const ops = setores.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  $('setor').innerHTML = '<option value="">Selecione o setor</option>' + ops;
+  $('edSetor').innerHTML = '<option value="">(sem setor)</option>' + ops;
+  if (setores.includes(atual)) $('setor').value = atual;
+}
+
+// Código manual padronizado (M00001, M00002...), numerado pelo servidor para não repetir entre as duplas
+async function gerarManual(){
+  if (!cfg.url || !cfg.token){ msg('Abra Config e preencha link e senha.', 'err'); return; }
+  const atual = $('codigo').value.trim();
+  if (/^M\d{5,}$/.test(atual)){ msg('Este item já tem o código manual '+atual+'. Salve a contagem antes de gerar outro.', 'warn'); return; }
+  if (!navigator.onLine){ msg('Sem internet: o código manual precisa de conexão para não repetir entre as duplas.', 'err'); return; }
+  $('btnManual').disabled = true; msg('Gerando código…');
+  try{
+    const r = await fetch(cfg.url + '?token=' + encodeURIComponent(cfg.token) + '&acao=proximo');
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.erro || 'Falha');
+    await paraScan();
+    $('codigo').value = j.codigo; $('desc').value = '';
+    msg('Código manual: '+j.codigo+'. Escreva esse código numa etiqueta e cole no item. Descreva o item abaixo.', 'ok');
+    $('qtd').focus();
+  }catch{
+    msg('Não consegui gerar o código. Verifique a conexão e a senha.', 'err');
+  }finally{
+    $('btnManual').disabled = false;
+  }
+}
+
 function reduzFoto(file){
   return new Promise((res, rej) => {
     const url = URL.createObjectURL(file), img = new Image();
@@ -379,13 +417,15 @@ let salvando = false;
 async function salvar(){
   if (salvando) return;
   const code = $('codigo').value.trim(), qtd = $('qtd').value.trim(),
-        desc = $('desc').value.trim(), cor = $('cor').value.trim();
+        desc = $('desc').value.trim(), cor = $('cor').value.trim(), setor = $('setor').value;
   if (!cfg.url || !cfg.token || !cfg.dupla){ msg('Abra Config e preencha link, senha e nome da dupla.', 'err'); return; }
   if (!code){ msg('Leia ou digite o código.', 'err'); return; }
+  if (!setor){ msg('Selecione o setor.', 'err'); $('setor').focus(); return; }
+  if (/^M\d{5,}$/.test(code) && !desc){ msg('Item com código manual precisa de descrição.', 'err'); $('desc').focus(); return; }
   if (qtd === '' || isNaN(Number(qtd)) || Number(qtd) < 0){ msg('Informe a quantidade.', 'err'); $('qtd').focus(); return; }
 
   salvando = true; $('btnSalvar').disabled = true;
-  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc, cor };
+  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc, cor, setor };
   let aviso = '';
   if (fotoAtual){
     try{ await fotoPut(item.id, fotoAtual); item.foto = true; }
@@ -442,6 +482,7 @@ async function baixaDescricoes(){
     if (j.ok){
       descs = Object.assign(j.desc, descs); save('descs', descs);
       cores = j.cores || []; save('cores', cores); montaCores();
+      if (j.setores && j.setores.length){ setores = j.setores; save('setores', setores); montaSetores(); }
     }
   }catch{}
 }
@@ -463,6 +504,8 @@ function abreEdicao(id){
   $('edQtd').value = h.qty;
   $('edDesc').value = h.desc || '';
   $('edCor').value = h.cor || '';
+  $('edSetor').value = h.setor || '';
+  if (!$('edSetor').value) $('edSetor').selectedIndex = 0;
   $('dlgEdit').showModal();
 }
 
@@ -504,7 +547,7 @@ $('frmEdit').addEventListener('submit', e => {
     if (!code || qty === '' || isNaN(Number(qty)) || Number(qty) < 0){
       e.preventDefault(); alert('Informe um código e uma quantidade válidos.'); return;
     }
-    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim(), cor:$('edCor').value.trim() });
+    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim(), cor:$('edCor').value.trim(), setor:$('edSetor').value });
   } else if (acao === 'del'){
     if (!confirm('Excluir esta leitura?')){ e.preventDefault(); return; }
     aplicaEdicao(editId, null);
@@ -512,6 +555,8 @@ $('frmEdit').addEventListener('submit', e => {
 });
 
 // ---------- Eventos ----------
+$('btnManual').onclick = gerarManual;
+$('setor').addEventListener('change', () => save('setor', $('setor').value));
 $('btnFoto').onclick = async () => { await paraScan(); $('fileFoto').click(); };
 $('fileFoto').addEventListener('change', async () => {
   const f = $('fileFoto').files[0];
@@ -554,7 +599,7 @@ $('frmCfg').addEventListener('submit', e => {
 window.addEventListener('online',  () => { atualizaStatus(); enviar(); });
 window.addEventListener('offline', atualizaStatus);
 
-montaCores(); desenhaLista(); atualizaStatus();
+montaCores(); montaSetores(); desenhaLista(); atualizaStatus();
 if (!cfg.url) $('btnCfg').click(); else { baixaDescricoes(); enviar(); }
 </script>
 </body>
