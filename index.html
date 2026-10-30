@@ -89,7 +89,7 @@
       </div>
     </div>
     <div class="row" style="margin-top:8px">
-      <button id="btnScan" hidden>Ler código ao vivo</button>
+      <button id="btnScan">Ler código</button>
       <button type="button" id="btnLerFoto" style="flex:2">Ler código (câmera do celular)</button>
       <button id="btnSync">Sincronizar</button>
     </div>
@@ -100,7 +100,7 @@
     <select id="comodo"></select>
 
     <label for="codigo">Código de barras</label>
-    <input id="codigo" inputmode="text" autocomplete="off" placeholder="Leia ou digite e toque Enter">
+    <input id="codigo" inputmode="text" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="Leia ou digite e toque Enter">
     <button type="button" id="btnManual" style="width:100%;margin-top:6px">Item sem código? Gerar código manual</button>
 
     <label for="qtd">Quantidade</label>
@@ -144,12 +144,21 @@
   <form method="dialog" id="frmCfg">
     <h2>Configurações</h2>
     <label for="cfgUrl">Link do Apps Script (termina em /exec)</label>
-    <input id="cfgUrl" placeholder="https://script.google.com/macros/s/.../exec">
+    <input id="cfgUrl" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="https://script.google.com/macros/s/.../exec">
     <label for="cfgToken">Senha</label>
-    <input id="cfgToken" placeholder="a mesma do Code.gs">
+    <input id="cfgToken" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="a mesma do Code.gs">
+    <label for="cfgModo">Leitura do código</label>
+    <select id="cfgModo">
+      <option value="auto">Automático (iPhone: ao vivo; Android: foto)</option>
+      <option value="vivo">Só câmera ao vivo</option>
+      <option value="foto">Só foto da câmera do celular</option>
+      <option value="ambos">Os dois botões</option>
+    </select>
     <label for="cfgDupla">Nome da dupla</label>
     <input id="cfgDupla" placeholder="Ex.: Dupla 3 - Ana e João">
     <p class="small">Fica salvo só neste aparelho.</p>
+    <button type="button" id="btnTeste" style="width:100%;margin-top:8px">Testar conexão</button>
+    <div class="msg" id="msgTeste"></div>
     <div class="row" style="margin-top:8px">
       <button value="cancel">Cancelar</button>
       <button class="primary" id="cfgSalvar" value="ok">Salvar</button>
@@ -161,7 +170,7 @@
   <form method="dialog" id="frmEdit">
     <h2>Corrigir leitura</h2>
     <label for="edCodigo">Código</label>
-    <input id="edCodigo" autocomplete="off">
+    <input id="edCodigo" autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false">
     <label for="edQtd">Quantidade</label>
     <input id="edQtd" type="number" inputmode="decimal" min="0" step="any">
     <label for="edDesc">Descrição</label>
@@ -267,8 +276,20 @@ function candidato(txt){
 }
 
 // ---------- Controles da câmera (zoom, foco, lanterna) ----------
-// Fase de teste: leitura só pela câmera do celular. Mude para true para voltar o leitor ao vivo.
-const MODO_AO_VIVO = false;
+// Modo de leitura: 'auto' usa a câmera ao vivo no iPhone (lá a foto não é lida bem) e a foto da câmera no Android.
+const ehIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+function modoLeitura(){
+  const m = (cfg && cfg.modo) || 'auto';
+  return m === 'auto' ? (ehIOS ? 'vivo' : 'foto') : m;       // 'vivo' | 'foto' | 'ambos'
+}
+function aplicaModo(){
+  const m = modoLeitura();
+  $('btnScan').hidden = (m === 'foto');
+  $('btnLerFoto').hidden = (m === 'vivo');
+  $('btnScan').textContent = m === 'ambos' ? 'Ler ao vivo' : 'Ler código';
+  $('btnLerFoto').textContent = m === 'ambos' ? 'Ler de foto' : 'Ler código (câmera do celular)';
+  $('btnScan').style.flex = $('btnLerFoto').style.flex = '2';
+}
 let lanterna = false;
 let camId = load('camId', '');          // câmera traseira escolhida (algumas têm lente grande-angular borrada)
 let traseiras = [];
@@ -476,7 +497,7 @@ async function salvar(){
   montaSugestoes(); desenhaLista(); atualizaStatus();
   salvando = false; $('btnSalvar').disabled = false;
   enviar();
-  if (MODO_AO_VIVO) iniciaScan();      // já abre o leitor ao vivo para o próximo item
+  if (modoLeitura() !== 'foto') iniciaScan();   // já abre o leitor ao vivo para o próximo item
 }
 
 async function enviar(){
@@ -497,40 +518,79 @@ async function enviar(){
       body: JSON.stringify({ token:cfg.token, items:lote }) });
     const j = await r.json();
     if (!j.ok) throw new Error(j.erro || 'Falha');
+    ultimoErro = '';
     const k = i => i.qid || i.id;
     const enviados = new Set(lote.map(k));
     fila = fila.filter(i=>!enviados.has(k(i))); save('fila', fila);
     lote.forEach(i => { if (i.foto && (i.op || 'add') === 'add') fotoDel(i.id); });
     if (j.fotosComErro) msg(j.fotosComErro+' foto(s) não foram salvas no Drive. Avise quem configurou o Apps Script.'+(j.erroFoto ? ' Motivo: '+j.erroFoto : ''), 'err');
   }catch(e){
+    ultimoErro = explicaErro(e);
     if (String(e.message).includes('Senha')) msg('Senha incorreta. Verifique em Config.', 'err');
   }finally{
     enviando = false; desenhaLista(); atualizaStatus();
-    if (fila.length && navigator.onLine) setTimeout(enviar, 1500);
+    if (fila.length && navigator.onLine) setTimeout(enviar, ultimoErro ? 15000 : 1500);
   }
 }
 
+let ultimoErro = '';
+function explicaErro(e){
+  const m = String((e && e.message) || e);
+  if (m.includes('Senha')) return 'Senha incorreta. Confira em Config.';
+  if (e instanceof SyntaxError) return 'O link devolveu uma página em vez de dados. Confira se a implantação está como "Qualquer pessoa" e se o link termina em /exec.';
+  if (e instanceof TypeError) return navigator.onLine
+    ? 'Não consegui falar com o Google Apps Script (acesso negado, link errado ou rede bloqueando). Use "Testar conexão" em Config.'
+    : 'Sem internet.';
+  return m;
+}
+
 async function baixaDescricoes(){
-  if (!cfg.url || !cfg.token) return;
+  if (!cfg.url || !cfg.token) return false;
   try{
     const r = await fetch(cfg.url + '?token=' + encodeURIComponent(cfg.token));
     const j = await r.json();
-    if (j.ok){
-      descs = Object.assign(j.desc, descs); save('descs', descs);
-      attrs = Object.assign(j.attrs || {}, attrs); save('attrs', attrs);
-      cores = j.cores || []; save('cores', cores);
-      familias = j.familias || []; save('familias', familias);
-      marcas = j.marcas || []; save('marcas', marcas);
-      montaSugestoes();
-      if (j.comodos && j.comodos.length){ comodos = j.comodos; save('comodos', comodos); montaComodos(); }
-    }
-  }catch{}
+    if (!j.ok) throw new Error(j.erro || 'Falha');
+    descs = Object.assign(j.desc, descs); save('descs', descs);
+    attrs = Object.assign(j.attrs || {}, attrs); save('attrs', attrs);
+    cores = j.cores || []; save('cores', cores);
+    familias = j.familias || []; save('familias', familias);
+    marcas = j.marcas || []; save('marcas', marcas);
+    montaSugestoes();
+    if (j.comodos && j.comodos.length){ comodos = j.comodos; save('comodos', comodos); montaComodos(); }
+    return true;
+  }catch(e){
+    ultimoErro = explicaErro(e);
+    return false;
+  }
 }
 
 async function sincronizar(){
   msg('Sincronizando…');
-  await enviar(); await baixaDescricoes();
-  msg(fila.length ? 'Ainda há itens pendentes (sem conexão?).' : 'Sincronizado.', fila.length ? 'warn' : 'ok');
+  ultimoErro = '';
+  await enviar();
+  const erroEnvio = ultimoErro;
+  ultimoErro = '';
+  const okLista = await baixaDescricoes();
+  if (fila.length) msg((erroEnvio || 'Ainda há itens pendentes.') + ' Os dados continuam guardados neste aparelho.', 'err');
+  else if (!okLista) msg(ultimoErro || 'Não consegui atualizar a lista.', 'err');
+  else msg('Sincronizado.', 'ok');
+}
+
+// Teste da janela de Config: usa o que está digitado, mesmo antes de salvar
+async function testaConexao(){
+  const url = $('cfgUrl').value.trim(), token = $('cfgToken').value.trim(), out = $('msgTeste');
+  const dizer = (t, tipo) => { out.textContent = t; out.className = 'msg ' + tipo; };
+  if (!url || !token){ dizer('Preencha o link e a senha primeiro.', 'err'); return; }
+  if (!/\/exec(\?.*)?$/.test(url)){ dizer('O link precisa terminar em /exec. Copie de novo em Implantar > Gerenciar implantações.', 'err'); return; }
+  dizer('Testando…', '');
+  try{
+    const r = await fetch(url + '?token=' + encodeURIComponent(token));
+    const t = await r.text();
+    let j; try{ j = JSON.parse(t); }catch{ throw new SyntaxError('página'); }
+    if (j.ok) dizer('Conexão OK. O app está falando com a planilha.', 'ok');
+    else if (String(j.erro).includes('Senha')) dizer('O link está certo, mas a senha não confere com a do Code.gs.', 'err');
+    else dizer('O servidor respondeu com erro: ' + j.erro, 'err');
+  }catch(e){ dizer(explicaErro(e), 'err'); }
 }
 
 // ---------- Trocar de câmera traseira ----------
@@ -698,6 +758,7 @@ $('fileLeitura').addEventListener('change', e => {
   const f = e.target.files[0]; e.target.value = ''; lerDeFoto(f);
 });
 $('btnTrocaCam').onclick = trocaCamera;
+$('btnTeste').onclick = testaConexao;
 $('btnManual').onclick = gerarManual;
 $('comodo').addEventListener('change', () => save('comodo', $('comodo').value));
 $('btnFoto').onclick = async () => { await paraScan(); $('fileFoto').click(); };
@@ -734,17 +795,17 @@ $('qtd').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefau
 $('desc').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('familia').focus(); } });
 $('familia').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('marca').focus(); } });
 $('marca').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('cor').focus(); } });
-$('btnCfg').onclick = () => { $('cfgUrl').value=cfg.url; $('cfgToken').value=cfg.token; $('cfgDupla').value=cfg.dupla; $('dlg').showModal(); };
+$('btnCfg').onclick = () => { $('cfgUrl').value=cfg.url; $('cfgToken').value=cfg.token; $('cfgDupla').value=cfg.dupla; $('cfgModo').value=cfg.modo || 'auto'; $('dlg').showModal(); };
 $('frmCfg').addEventListener('submit', e => {
   if (e.submitter && e.submitter.value === 'ok'){
-    cfg = { url:$('cfgUrl').value.trim(), token:$('cfgToken').value.trim(), dupla:$('cfgDupla').value.trim() };
-    save('cfg', cfg); atualizaStatus(); baixaDescricoes();
+    cfg = { url:$('cfgUrl').value.trim(), token:$('cfgToken').value.trim(), dupla:$('cfgDupla').value.trim(), modo:$('cfgModo').value };
+    save('cfg', cfg); aplicaModo(); atualizaStatus(); baixaDescricoes();
   }
 });
 window.addEventListener('online',  () => { atualizaStatus(); enviar(); });
 window.addEventListener('offline', atualizaStatus);
 
-$('btnScan').hidden = !MODO_AO_VIVO;
+aplicaModo();
 montaSugestoes(); montaComodos(); desenhaLista(); atualizaStatus();
 if (!cfg.url) $('btnCfg').click(); else { baixaDescricoes(); enviar(); }
 </script>
