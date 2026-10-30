@@ -40,6 +40,7 @@
   [hidden]{display:none !important}
   input[type=range]{padding:0;height:32px}
   #reader{cursor:pointer}
+  #leitorArquivo{position:absolute;left:-10000px;top:0;width:4000px;height:4000px;overflow:hidden;visibility:hidden}
   .prev{display:block;width:100%;max-height:220px;object-fit:contain;border-radius:8px;margin-top:8px;background:var(--bg)}
   li .d b{color:var(--ink)}
   li[data-id]{cursor:pointer}
@@ -84,15 +85,23 @@
       <div class="row" style="margin-top:8px">
         <button type="button" id="btnRefocar" hidden>Refocar</button>
         <button type="button" id="btnLanterna" hidden>Lanterna</button>
+        <button type="button" id="btnTrocaCam" hidden>Trocar câmera</button>
       </div>
     </div>
     <div class="row" style="margin-top:8px">
       <button id="btnScan">Ler código</button>
       <button id="btnSync">Sincronizar</button>
     </div>
+    <div class="row" style="margin-top:8px">
+      <button type="button" id="btnLerFoto">Ler de foto (câmera do celular)</button>
+      <button type="button" id="btnLerGaleria">Da galeria</button>
+    </div>
+    <input id="fileLeitura" type="file" accept="image/*" capture="environment" hidden>
+    <input id="fileGaleria" type="file" accept="image/*" hidden>
+    <div id="leitorArquivo" aria-hidden="true"></div>
 
-    <label for="setor">Setor</label>
-    <select id="setor"></select>
+    <label for="comodo">Cômodo</label>
+    <select id="comodo"></select>
 
     <label for="codigo">Código de barras</label>
     <input id="codigo" inputmode="text" autocomplete="off" placeholder="Leia ou digite e toque Enter">
@@ -103,6 +112,12 @@
 
     <label for="desc">Descrição</label>
     <input id="desc" autocomplete="off" placeholder="Breve descrição do item">
+
+    <label for="familia">Família / material (opcional)</label>
+    <input id="familia" list="listaFamilias" autocomplete="off" placeholder="Ex.: plástico, vidro, metal">
+
+    <label for="marca">Marca (opcional)</label>
+    <input id="marca" list="listaMarcas" autocomplete="off" placeholder="Ex.: Tramontina">
 
     <label for="cor">Cor (opcional)</label>
     <input id="cor" list="listaCores" autocomplete="off" placeholder="Ex.: azul">
@@ -116,6 +131,8 @@
     <img id="prevFoto" class="prev" alt="Prévia da foto" hidden>
 
     <datalist id="listaCores"></datalist>
+    <datalist id="listaFamilias"></datalist>
+    <datalist id="listaMarcas"></datalist>
     <div class="msg" id="msg"></div>
     <button class="primary" id="btnSalvar" style="width:100%;margin-top:8px">Salvar contagem</button>
   </section>
@@ -153,10 +170,14 @@
     <input id="edQtd" type="number" inputmode="decimal" min="0" step="any">
     <label for="edDesc">Descrição</label>
     <input id="edDesc" autocomplete="off">
+    <label for="edFamilia">Família / material</label>
+    <input id="edFamilia" list="listaFamilias" autocomplete="off">
+    <label for="edMarca">Marca</label>
+    <input id="edMarca" list="listaMarcas" autocomplete="off">
     <label for="edCor">Cor</label>
     <input id="edCor" list="listaCores" autocomplete="off">
-    <label for="edSetor">Setor</label>
-    <select id="edSetor"></select>
+    <label for="edComodo">Cômodo</label>
+    <select id="edComodo"></select>
     <div class="row" style="margin-top:12px">
       <button value="cancel">Cancelar</button>
       <button class="danger" value="del">Excluir</button>
@@ -176,8 +197,11 @@ let fila  = load('fila', []);        // leituras ainda não enviadas
 let hist  = load('hist', []);        // últimas leituras (para mostrar na tela)
 let descs = load('descs', {});       // código -> descrição
 let cores = load('cores', []);       // cores já usadas (sugestões)
-const SETORES_PADRAO = Array.from({ length:9 }, (_, i) => 'Setor ' + (i + 1));
-let setores = load('setores', SETORES_PADRAO);   // a lista oficial vem do Code.gs
+let familias = load('familias', []);
+let marcas = load('marcas', []);
+let attrs = load('attrs', {});       // código -> [família, marca]
+const COMODOS_PADRAO = Array.from({ length:9 }, (_, i) => 'Cômodo ' + (i + 1));
+let comodos = load('comodos', COMODOS_PADRAO);   // a lista oficial vem do Code.gs
 let fotoAtual = '';                  // foto tirada, ainda não salva
 let scanner = null, scanning = false, enviando = false;
 
@@ -215,8 +239,8 @@ function desenhaLista(){
   const pend = new Set(fila.map(i=>i.id));
   $('lista').innerHTML = hist.slice(0,30).map(i =>
     `<li tabindex="0" data-id="${esc(i.id)}" class="${pend.has(i.id)?'pend':''}"><span class="c">${esc(i.code)}</span><span class="q">${esc(i.qty)}</span>`
-    + ((i.setor || i.desc || i.cor || i.foto)
-        ? `<span class="d">${i.setor ? '<b>'+esc(i.setor)+'</b> ' : ''}${i.cor ? '<b>'+esc(i.cor)+'</b> ' : ''}${esc(i.desc || '')}${i.foto ? ' 📷' : ''}</span>` : '')
+    + ((i.comodo || i.setor || i.desc || i.cor || i.familia || i.marca || i.foto)
+        ? `<span class="d">${(i.comodo || i.setor) ? '<b>'+esc(i.comodo || i.setor)+'</b> ' : ''}${i.cor ? '<b>'+esc(i.cor)+'</b> ' : ''}${esc(i.desc || '')}${(i.familia || i.marca) ? ' ('+[i.familia, i.marca].filter(Boolean).map(esc).join(', ')+')' : ''}${i.foto ? ' 📷' : ''}</span>` : '')
     + `</li>`).join('')
     || '<li><span class="d">Nenhuma leitura ainda.</span></li>';
 }
@@ -248,6 +272,8 @@ function candidato(txt){
 
 // ---------- Controles da câmera (zoom, foco, lanterna) ----------
 let lanterna = false;
+let camId = load('camId', '');          // câmera traseira escolhida (algumas têm lente grande-angular borrada)
+let traseiras = [];
 function trilha(){
   const v = document.querySelector('#reader video');
   return v && v.srcObject ? v.srcObject.getVideoTracks()[0] : null;
@@ -312,15 +338,18 @@ async function iniciaScan(){
     verbose: false
   });
   try{
-    await scanner.start({ facingMode:'environment' },
+    await scanner.start(camId || { facingMode:'environment' },
       { fps:10,
         qrbox:(w,h)=>({ width:Math.min(w-20,360), height:Math.min(h,160) }),
-        videoConstraints:{ facingMode:'environment', width:{ ideal:1920 }, height:{ ideal:1080 } } },
+        videoConstraints:{ ...(camId ? { deviceId:{ exact:camId } } : { facingMode:'environment' }),
+                           width:{ ideal:1920 }, height:{ ideal:1080 } } },
       txt => candidato(txt), () => {});
     scanning = true; $('btnScan').textContent = 'Parar câmera';
     ult = { txt:'', n:0, t:0 };
     configuraCamera();
+    listaCameras();
   }catch(e){
+    if (camId){ camId = ''; save('camId', ''); return iniciaScan(); }   // a câmera guardada não existe mais
     $('reader').style.display='none';
     msg('Não foi possível abrir a câmera. Permita o acesso ou digite o código.', 'err');
   }
@@ -330,7 +359,7 @@ async function paraScan(){
   try{ await scanner.stop(); }catch{}
   scanning = false; $('reader').style.display='none'; $('btnScan').textContent='Ler código';
   $('camCtl').hidden = true; $('zoomBox').hidden = true; $('focoBox').hidden = true;
-  $('btnRefocar').hidden = true; $('btnLanterna').hidden = true;
+  $('btnRefocar').hidden = true; $('btnLanterna').hidden = true; $('btnTrocaCam').hidden = true;
   lanterna = false; $('btnLanterna').textContent = 'Lanterna';
 }
 function aoLer(txt){
@@ -344,6 +373,8 @@ function preencheDesc(){
   const c = $('codigo').value.trim();
   if (!c) return;
   $('desc').value = descs[c] || '';
+  const a = attrs[c] || ['', ''];
+  $('familia').value = a[0]; $('marca').value = a[1];
   const ja = hist.filter(i => i.code === c);
   if (ja.length){
     const tot = ja.reduce((s,i)=>s+Number(i.qty||0), 0);
@@ -356,18 +387,23 @@ function preencheDesc(){
 // ---------- Salvar e enviar ----------
 function novoId(){ return Date.now().toString(36) + Math.random().toString(36).slice(2,8); }
 
-function montaCores(){
-  const todas = new Set(cores);
-  hist.forEach(i => { if (i.cor) todas.add(i.cor); });
-  $('listaCores').innerHTML = Array.from(todas).sort().map(c => `<option value="${esc(c)}">`).join('');
+function montaSugestoes(){
+  const monta = (id, base, campo) => {
+    const todas = new Set(base);
+    hist.forEach(i => { if (i[campo]) todas.add(i[campo]); });
+    $(id).innerHTML = Array.from(todas).sort().map(c => `<option value="${esc(c)}">`).join('');
+  };
+  monta('listaCores', cores, 'cor');
+  monta('listaFamilias', familias, 'familia');
+  monta('listaMarcas', marcas, 'marca');
 }
 
-function montaSetores(){
-  const atual = $('setor').value || load('setor', '');
-  const ops = setores.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
-  $('setor').innerHTML = '<option value="">Selecione o setor</option>' + ops;
-  $('edSetor').innerHTML = '<option value="">(sem setor)</option>' + ops;
-  if (setores.includes(atual)) $('setor').value = atual;
+function montaComodos(){
+  const atual = $('comodo').value || load('comodo', '');
+  const ops = comodos.map(s => `<option value="${esc(s)}">${esc(s)}</option>`).join('');
+  $('comodo').innerHTML = '<option value="">Selecione o cômodo</option>' + ops;
+  $('edComodo').innerHTML = '<option value="">(sem cômodo)</option>' + ops;
+  if (comodos.includes(atual)) $('comodo').value = atual;
 }
 
 // Código manual padronizado (M00001, M00002...), numerado pelo servidor para não repetir entre as duplas
@@ -382,7 +418,7 @@ async function gerarManual(){
     const j = await r.json();
     if (!j.ok) throw new Error(j.erro || 'Falha');
     await paraScan();
-    $('codigo').value = j.codigo; $('desc').value = '';
+    $('codigo').value = j.codigo; $('desc').value = ''; $('familia').value = ''; $('marca').value = '';
     msg('Código manual: '+j.codigo+'. Escreva esse código numa etiqueta e cole no item. Descreva o item abaixo.', 'ok');
     $('qtd').focus();
   }catch{
@@ -417,15 +453,16 @@ let salvando = false;
 async function salvar(){
   if (salvando) return;
   const code = $('codigo').value.trim(), qtd = $('qtd').value.trim(),
-        desc = $('desc').value.trim(), cor = $('cor').value.trim(), setor = $('setor').value;
+        desc = $('desc').value.trim(), cor = $('cor').value.trim(), comodo = $('comodo').value,
+        familia = $('familia').value.trim(), marca = $('marca').value.trim();
   if (!cfg.url || !cfg.token || !cfg.dupla){ msg('Abra Config e preencha link, senha e nome da dupla.', 'err'); return; }
   if (!code){ msg('Leia ou digite o código.', 'err'); return; }
-  if (!setor){ msg('Selecione o setor.', 'err'); $('setor').focus(); return; }
+  if (!comodo){ msg('Selecione o cômodo.', 'err'); $('comodo').focus(); return; }
   if (/^M\d{5,}$/.test(code) && !desc){ msg('Item com código manual precisa de descrição.', 'err'); $('desc').focus(); return; }
   if (qtd === '' || isNaN(Number(qtd)) || Number(qtd) < 0){ msg('Informe a quantidade.', 'err'); $('qtd').focus(); return; }
 
   salvando = true; $('btnSalvar').disabled = true;
-  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc, cor, setor };
+  const item = { id:novoId(), ts:new Date().toISOString(), dupla:cfg.dupla, code, qty:Number(qtd), desc, cor, familia, marca, comodo };
   let aviso = '';
   if (fotoAtual){
     try{ await fotoPut(item.id, fotoAtual); item.foto = true; }
@@ -433,11 +470,12 @@ async function salvar(){
   }
   fila.push({ ...item, op:'add', qid:novoId() }); hist.unshift(item); hist = hist.slice(0,200);
   if (desc) descs[code] = desc;
-  save('fila', fila); save('hist', hist); save('descs', descs);
+  if (familia || marca) attrs[code] = [familia, marca];
+  save('fila', fila); save('hist', hist); save('descs', descs); save('attrs', attrs);
 
-  $('codigo').value=''; $('qtd').value=''; $('desc').value=''; $('cor').value=''; limpaFoto();
+  $('codigo').value=''; $('qtd').value=''; $('desc').value=''; $('familia').value=''; $('marca').value=''; $('cor').value=''; limpaFoto();
   msg('Salvo: '+code+' × '+item.qty+aviso, aviso ? 'warn' : 'ok');
-  montaCores(); desenhaLista(); atualizaStatus();
+  montaSugestoes(); desenhaLista(); atualizaStatus();
   salvando = false; $('btnSalvar').disabled = false;
   enviar();
   iniciaScan();                        // já abre para o próximo item
@@ -481,8 +519,12 @@ async function baixaDescricoes(){
     const j = await r.json();
     if (j.ok){
       descs = Object.assign(j.desc, descs); save('descs', descs);
-      cores = j.cores || []; save('cores', cores); montaCores();
-      if (j.setores && j.setores.length){ setores = j.setores; save('setores', setores); montaSetores(); }
+      attrs = Object.assign(j.attrs || {}, attrs); save('attrs', attrs);
+      cores = j.cores || []; save('cores', cores);
+      familias = j.familias || []; save('familias', familias);
+      marcas = j.marcas || []; save('marcas', marcas);
+      montaSugestoes();
+      if (j.comodos && j.comodos.length){ comodos = j.comodos; save('comodos', comodos); montaComodos(); }
     }
   }catch{}
 }
@@ -491,6 +533,100 @@ async function sincronizar(){
   msg('Sincronizando…');
   await enviar(); await baixaDescricoes();
   msg(fila.length ? 'Ainda há itens pendentes (sem conexão?).' : 'Sincronizado.', fila.length ? 'warn' : 'ok');
+}
+
+// ---------- Trocar de câmera traseira ----------
+async function listaCameras(){
+  try{
+    const devs = await navigator.mediaDevices.enumerateDevices();
+    traseiras = devs.filter(d => d.kind === 'videoinput' && !/front|frontal|user|selfie/i.test(d.label));
+    $('btnTrocaCam').hidden = traseiras.length < 2;
+  }catch{ $('btnTrocaCam').hidden = true; }
+}
+async function trocaCamera(){
+  if (traseiras.length < 2) return;
+  const t = trilha();
+  const atualId = camId || (t && t.getSettings && t.getSettings().deviceId) || '';
+  const i = traseiras.findIndex(d => d.deviceId === atualId);
+  camId = traseiras[(i + 1) % traseiras.length].deviceId;
+  save('camId', camId);
+  await paraScan(); await iniciaScan();
+  msg('Câmera trocada. Se ainda estiver borrado, toque de novo para testar a próxima.', 'ok');
+}
+
+// ---------- Ler o código a partir de uma foto (câmera original do celular) ----------
+const FORMATOS_BD = ['ean_13','ean_8','upc_a','upc_e','code_128','code_39','itf','qr_code'];
+let leitorArq = null;
+
+function carregaImagem(file){
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), img = new Image();
+    img.onload = () => { URL.revokeObjectURL(url); res(img); };
+    img.onerror = () => { URL.revokeObjectURL(url); rej(new Error('imagem inválida')); };
+    img.src = url;
+  });
+}
+function canvasDe(img, maxLado){
+  const w0 = img.naturalWidth || img.width, h0 = img.naturalHeight || img.height;
+  const fator = Math.min(1, maxLado / Math.max(w0, h0));
+  const c = document.createElement('canvas');
+  c.width = Math.round(w0 * fator); c.height = Math.round(h0 * fator);
+  c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+  return c;
+}
+function leituraValida(txt){
+  if (/^\d+$/.test(txt) && [12,13,14].includes(txt.length)) return gs1Ok(txt);
+  return true;
+}
+// Leitor nativo do Android/Chrome (BarcodeDetector): costuma ser o melhor para códigos pequenos
+async function lePorDetector(canvas){
+  if (!('BarcodeDetector' in window)) return [];
+  let formatos = FORMATOS_BD;
+  try{ const sup = await BarcodeDetector.getSupportedFormats(); formatos = FORMATOS_BD.filter(f => sup.includes(f)); }catch{}
+  if (!formatos.length) return [];
+  const achados = await new BarcodeDetector({ formats:formatos }).detect(canvas);
+  return achados.filter(a => a.rawValue).map(a => ({
+    txt:a.rawValue.trim(), area:a.boundingBox ? a.boundingBox.width * a.boundingBox.height : 0 }));
+}
+// Plano B: leitor em JavaScript (o mesmo da câmera ao vivo)
+async function lePorBiblioteca(canvas){
+  try{
+    const blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', 0.92));
+    if (!blob) return null;
+    leitorArq = leitorArq || new Html5Qrcode('leitorArquivo', {
+      formatsToSupport:[ Html5QrcodeSupportedFormats.EAN_13, Html5QrcodeSupportedFormats.EAN_8,
+        Html5QrcodeSupportedFormats.UPC_A, Html5QrcodeSupportedFormats.UPC_E,
+        Html5QrcodeSupportedFormats.CODE_128, Html5QrcodeSupportedFormats.CODE_39,
+        Html5QrcodeSupportedFormats.ITF, Html5QrcodeSupportedFormats.QR_CODE ],
+      verbose:false });
+    const txt = await leitorArq.scanFile(new File([blob], 'foto.jpg', { type:'image/jpeg' }), false);
+    return txt ? String(txt).trim() : null;
+  }catch{ return null; }
+}
+async function lerDeFoto(file){
+  if (!file) return;
+  await paraScan();
+  msg('Lendo o código da foto…');
+  try{
+    const img = await carregaImagem(file);
+    let invalido = '';
+    for (const lado of [3000, 2000, 1200]){            // tenta em tamanhos diferentes
+      const c = canvasDe(img, lado);
+      let achados = [];
+      try{ achados = await lePorDetector(c); }catch{}
+      if (!achados.length){
+        const t = await lePorBiblioteca(c);
+        if (t) achados = [{ txt:t, area:0 }];
+      }
+      const validos = achados.filter(a => leituraValida(a.txt)).sort((a, b) => b.area - a.area);
+      if (validos.length){ aoLer(validos[0].txt); return; }
+      if (achados.length) invalido = achados[0].txt;
+    }
+    if (invalido) msg('Li '+invalido+', mas o dígito verificador não confere. Tire outra foto, mais perto, reta e com boa luz.', 'warn');
+    else msg('Não achei o código nessa foto. Chegue mais perto (o código deve ocupar boa parte da foto), mantenha reto e com boa luz, ou digite.', 'err');
+  }catch{
+    msg('Não consegui abrir a foto. Tente de novo.', 'err');
+  }
 }
 
 // ---------- Corrigir / excluir ----------
@@ -504,8 +640,10 @@ function abreEdicao(id){
   $('edQtd').value = h.qty;
   $('edDesc').value = h.desc || '';
   $('edCor').value = h.cor || '';
-  $('edSetor').value = h.setor || '';
-  if (!$('edSetor').value) $('edSetor').selectedIndex = 0;
+  $('edFamilia').value = h.familia || '';
+  $('edMarca').value = h.marca || '';
+  $('edComodo').value = h.comodo || h.setor || '';
+  if (!$('edComodo').value) $('edComodo').selectedIndex = 0;
   $('dlgEdit').showModal();
 }
 
@@ -520,13 +658,14 @@ function aplicaEdicao(id, campos){
     if (direto) Object.assign(pendente, campos);
     else fila.push({ op:'edit', id, qid:novoId(), ...campos });
     if (campos.desc) descs[campos.code] = campos.desc;
+    if (campos.familia || campos.marca) attrs[campos.code] = [campos.familia || '', campos.marca || ''];
   } else {
     if (idx >= 0) hist.splice(idx, 1);
     if (direto){ fila = fila.filter(i => i.id !== id); fotoDel(id); }
     else fila.push({ op:'del', id, qid:novoId() });
   }
-  save('fila', fila); save('hist', hist); save('descs', descs);
-  montaCores(); desenhaLista(); atualizaStatus();
+  save('fila', fila); save('hist', hist); save('descs', descs); save('attrs', attrs);
+  montaSugestoes(); desenhaLista(); atualizaStatus();
   msg(campos ? 'Leitura corrigida.' : 'Leitura excluída.', 'ok');
   enviar();
 }
@@ -547,7 +686,8 @@ $('frmEdit').addEventListener('submit', e => {
     if (!code || qty === '' || isNaN(Number(qty)) || Number(qty) < 0){
       e.preventDefault(); alert('Informe um código e uma quantidade válidos.'); return;
     }
-    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim(), cor:$('edCor').value.trim(), setor:$('edSetor').value });
+    aplicaEdicao(editId, { code, qty:Number(qty), desc:$('edDesc').value.trim(), cor:$('edCor').value.trim(),
+      familia:$('edFamilia').value.trim(), marca:$('edMarca').value.trim(), comodo:$('edComodo').value });
   } else if (acao === 'del'){
     if (!confirm('Excluir esta leitura?')){ e.preventDefault(); return; }
     aplicaEdicao(editId, null);
@@ -555,8 +695,14 @@ $('frmEdit').addEventListener('submit', e => {
 });
 
 // ---------- Eventos ----------
+$('btnLerFoto').onclick = async () => { await paraScan(); $('fileLeitura').click(); };
+$('btnLerGaleria').onclick = async () => { await paraScan(); $('fileGaleria').click(); };
+['fileLeitura', 'fileGaleria'].forEach(id => $(id).addEventListener('change', e => {
+  const f = e.target.files[0]; e.target.value = ''; lerDeFoto(f);
+}));
+$('btnTrocaCam').onclick = trocaCamera;
 $('btnManual').onclick = gerarManual;
-$('setor').addEventListener('change', () => save('setor', $('setor').value));
+$('comodo').addEventListener('change', () => save('comodo', $('comodo').value));
 $('btnFoto').onclick = async () => { await paraScan(); $('fileFoto').click(); };
 $('fileFoto').addEventListener('change', async () => {
   const f = $('fileFoto').files[0];
@@ -588,7 +734,9 @@ $('btnSync').onclick = sincronizar;
 $('codigo').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); preencheDesc(); $('qtd').focus(); } });
 $('codigo').addEventListener('change', preencheDesc);
 $('qtd').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('desc').focus(); } });
-$('desc').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('cor').focus(); } });
+$('desc').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('familia').focus(); } });
+$('familia').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('marca').focus(); } });
+$('marca').addEventListener('keydown', e => { if (e.key==='Enter'){ e.preventDefault(); $('cor').focus(); } });
 $('btnCfg').onclick = () => { $('cfgUrl').value=cfg.url; $('cfgToken').value=cfg.token; $('cfgDupla').value=cfg.dupla; $('dlg').showModal(); };
 $('frmCfg').addEventListener('submit', e => {
   if (e.submitter && e.submitter.value === 'ok'){
@@ -599,7 +747,7 @@ $('frmCfg').addEventListener('submit', e => {
 window.addEventListener('online',  () => { atualizaStatus(); enviar(); });
 window.addEventListener('offline', atualizaStatus);
 
-montaCores(); montaSetores(); desenhaLista(); atualizaStatus();
+montaSugestoes(); montaComodos(); desenhaLista(); atualizaStatus();
 if (!cfg.url) $('btnCfg').click(); else { baixaDescricoes(); enviar(); }
 </script>
 </body>
