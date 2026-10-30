@@ -89,15 +89,11 @@
       </div>
     </div>
     <div class="row" style="margin-top:8px">
-      <button id="btnScan">Ler código</button>
+      <button id="btnScan" hidden>Ler código ao vivo</button>
+      <button type="button" id="btnLerFoto" style="flex:2">Ler código (câmera do celular)</button>
       <button id="btnSync">Sincronizar</button>
     </div>
-    <div class="row" style="margin-top:8px">
-      <button type="button" id="btnLerFoto">Ler de foto (câmera do celular)</button>
-      <button type="button" id="btnLerGaleria">Da galeria</button>
-    </div>
-    <input id="fileLeitura" type="file" accept="image/*" capture="environment" hidden>
-    <input id="fileGaleria" type="file" accept="image/*" hidden>
+    <input id="fileLeitura" type="file" accept="image/*" hidden>
     <div id="leitorArquivo" aria-hidden="true"></div>
 
     <label for="comodo">Cômodo</label>
@@ -271,6 +267,8 @@ function candidato(txt){
 }
 
 // ---------- Controles da câmera (zoom, foco, lanterna) ----------
+// Fase de teste: leitura só pela câmera do celular. Mude para true para voltar o leitor ao vivo.
+const MODO_AO_VIVO = false;
 let lanterna = false;
 let camId = load('camId', '');          // câmera traseira escolhida (algumas têm lente grande-angular borrada)
 let traseiras = [];
@@ -478,7 +476,7 @@ async function salvar(){
   montaSugestoes(); desenhaLista(); atualizaStatus();
   salvando = false; $('btnSalvar').disabled = false;
   enviar();
-  iniciaScan();                        // já abre para o próximo item
+  if (MODO_AO_VIVO) iniciaScan();      // já abre o leitor ao vivo para o próximo item
 }
 
 async function enviar(){
@@ -695,11 +693,10 @@ $('frmEdit').addEventListener('submit', e => {
 });
 
 // ---------- Eventos ----------
-$('btnLerFoto').onclick = async () => { await paraScan(); $('fileLeitura').click(); };
-$('btnLerGaleria').onclick = async () => { await paraScan(); $('fileGaleria').click(); };
-['fileLeitura', 'fileGaleria'].forEach(id => $(id).addEventListener('change', e => {
+$('btnLerFoto').onclick = () => $('fileLeitura').click();
+$('fileLeitura').addEventListener('change', e => {
   const f = e.target.files[0]; e.target.value = ''; lerDeFoto(f);
-}));
+});
 $('btnTrocaCam').onclick = trocaCamera;
 $('btnManual').onclick = gerarManual;
 $('comodo').addEventListener('change', () => save('comodo', $('comodo').value));
@@ -747,6 +744,7 @@ $('frmCfg').addEventListener('submit', e => {
 window.addEventListener('online',  () => { atualizaStatus(); enviar(); });
 window.addEventListener('offline', atualizaStatus);
 
+$('btnScan').hidden = !MODO_AO_VIVO;
 montaSugestoes(); montaComodos(); desenhaLista(); atualizaStatus();
 if (!cfg.url) $('btnCfg').click(); else { baixaDescricoes(); enviar(); }
 </script>
